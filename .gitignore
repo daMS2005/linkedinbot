@@ -31,9 +31,22 @@ venv
 *.swp
 *.swo
 
-# Project specific
-token.json
-linkedin_token.json
-linkedin_user_id.json
+# Environment variables
 .env
+
+# Logs
 *.log
+
+# Local development
+.DS_Store
+linkedin_token.json
+user_id.json
+
+# Streamlit
+.streamlit/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
+*~
