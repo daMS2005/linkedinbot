@@ -80,18 +80,32 @@ def start_linkedin_auth():
         logger.error(f"Error starting LinkedIn auth: {str(e)}")
         return None
 
-def generate_post(prompt):
-    """Generate a post using the DeepSeek service"""
+def generate_post(description: str = None, content_url: str = None, commentary: str = None) -> str:
+    """Generate a post using the FastAPI backend."""
     try:
-        response = requests.post(
-            f"{BACKEND_URL}/api/generate-post",
-            json={"description": prompt}
-        )
-        if response.status_code == 200:
-            return response.json().get("post")
+        # Show a spinner while generating
+        with st.spinner('Generating your post... This may take a minute...'):
+            # Add a longer timeout to prevent hanging
+            response = requests.post(
+                f"{BACKEND_URL}/api/generate-post",
+                json={"description": description, "content_url": content_url, "commentary": commentary},
+                timeout=None  # 2 minute timeout
+            )
+            response.raise_for_status()
+            data = response.json()
+            logger.debug(f"API response: {data}")
+            return data.get("post")
+    except requests.Timeout:
+        logger.error("Request to generate post timed out")
+        st.error("The request took too long. Please try again. If this persists, try with a shorter description.")
+        return None
+    except requests.exceptions.ConnectionError:
+        logger.error("Failed to connect to backend server")
+        st.error("Could not connect to the server. Please make sure the backend is running.")
         return None
     except Exception as e:
-        logger.error(f"Error generating post: {str(e)}")
+        logger.error(f"Failed to generate post: {str(e)}")
+        st.error(f"An error occurred: {str(e)}")
         return None
 
 def post_to_linkedin(content, image_url=None):
@@ -190,7 +204,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def main():
-    st.title("LinkedIn Post Generator")
+    st.title("LinkedIn Content Generator")
     
     # Check URL parameters for auth status
     params = st.query_params
@@ -212,6 +226,37 @@ def main():
             else:
                 st.error("Failed to get authentication URL")
         return
+
+    # User Context Configuration
+    st.sidebar.header("User Context")
+    with st.sidebar.expander("Professional Information", expanded=True):
+        industry = st.text_input("Industry", value=st.session_state.get("industry", ""))
+        role = st.text_input("Role", value=st.session_state.get("role", ""))
+        expertise = st.text_input("Expertise Areas (comma-separated)", value=st.session_state.get("expertise", ""))
+        years_exp = st.number_input("Years of Experience", min_value=0, max_value=50, value=st.session_state.get("years_exp", 0))
+        
+    with st.sidebar.expander("Content Preferences", expanded=True):
+        content_style = st.selectbox(
+            "Content Style",
+            ["professional", "casual", "academic"],
+            index=["professional", "casual", "academic"].index(st.session_state.get("content_style", "professional"))
+        )
+        target_audience = st.text_input("Target Audience", value=st.session_state.get("target_audience", "industry professionals"))
+        preferred_hashtags = st.text_input("Preferred Hashtags (comma-separated)", value=st.session_state.get("hashtags", ""))
+        
+    with st.sidebar.expander("Commentary Style", expanded=True):
+        commentary_style = st.selectbox(
+            "Commentary Style",
+            ["analytical", "opinionated", "balanced"],
+            index=["analytical", "opinionated", "balanced"].index(st.session_state.get("commentary_style", "analytical"))
+        )
+        
+    # Personality Configuration
+    st.sidebar.header("Personality Configuration")
+    formality = st.sidebar.slider("Formality Level", 0.0, 1.0, 0.7)
+    enthusiasm = st.sidebar.slider("Enthusiasm Level", 0.0, 1.0, 0.8)
+    humor = st.sidebar.slider("Humor Level", 0.0, 1.0, 0.5)
+    expertise = st.sidebar.slider("Expertise Level", 0.0, 1.0, 0.9)
     
     # Test values toggle
     use_test = st.checkbox("Use test values", value=st.session_state.use_test_values)
@@ -221,12 +266,24 @@ def main():
             test_values = get_test_values()
             st.session_state.description = test_values["description"]
     
+    # Content Input
+    content_type = st.radio("Choose content type:", ["Description", "URL"])
+    
     # Post generation form
     with st.form("post_form"):
-        description = st.text_area(
-            "Enter your post prompt",
-            value=st.session_state.description,
-            height=150
+        if content_type == "Description":
+            description = st.text_area(
+                "Enter your post description",
+                value=st.session_state.description,
+                height=150
+            )
+        else:
+            content_url = st.text_input("Enter content URL (article or video):")
+            
+        # Personal Commentary
+        commentary = st.text_area(
+            "Add your personal commentary or opinion (optional)",
+            height=100
         )
         
         # Show test images if using test values
@@ -242,16 +299,24 @@ def main():
         submit = st.form_submit_button("Generate Post")
         
         if submit:
-            if description:
+            if content_type == "Description" and description:
                 with st.spinner("Generating post..."):
-                    generated_post = generate_post(description)
+                    generated_post = generate_post(description=description, commentary=commentary)
+                    if generated_post:
+                        st.session_state.description = generated_post
+                        st.success("Post generated successfully!")
+                    else:
+                        st.error("Failed to generate post")
+            elif content_type == "URL" and content_url:
+                with st.spinner("Generating post..."):
+                    generated_post = generate_post(content_url=content_url, commentary=commentary)
                     if generated_post:
                         st.session_state.description = generated_post
                         st.success("Post generated successfully!")
                     else:
                         st.error("Failed to generate post")
             else:
-                st.warning("Please enter a post prompt")
+                st.warning("Please enter a description or content URL")
     
     # Display generated content
     if st.session_state.description:

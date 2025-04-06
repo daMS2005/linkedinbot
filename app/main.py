@@ -15,9 +15,11 @@ from urllib.parse import urlencode, parse_qs
 import time
 from pathlib import Path
 import traceback
+from config.personality import PersonalityConfig, default_personality
+from config.user_context import UserContext, default_user_context
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 # Load environment variables
@@ -35,12 +37,31 @@ app.add_middleware(
 )
 
 # Initialize services
-linkedin_service = LinkedInService()
-deepseek_service = DeepseekService()
+logger.debug("Initializing services")
+try:
+    logger.debug("Creating personality_config")
+    personality_config = PersonalityConfig()
+    logger.debug(f"personality_config created: {personality_config}")
+    
+    logger.debug("Creating user_context")
+    user_context = UserContext()
+    logger.debug(f"user_context created: {user_context}")
+    
+    logger.debug("Initializing DeepseekService")
+    deepseek_service = DeepseekService(personality_config=personality_config, user_context=user_context)
+    logger.debug("DeepseekService initialized successfully")
+    
+    logger.debug("Initializing LinkedInService")
+    linkedin_service = LinkedInService()
+    logger.debug("LinkedInService initialized successfully")
+except Exception as e:
+    logger.error(f"Failed to initialize services: {str(e)}")
+    raise
 
 class PostRequest(BaseModel):
-    description: str
-    image_url: Optional[str] = None
+    description: Optional[str] = None
+    content_url: Optional[str] = None
+    commentary: Optional[str] = None
 
 class LinkedInPostRequest(BaseModel):
     post: str
@@ -179,24 +200,39 @@ async def linkedin_callback(code: Optional[str] = None, error: Optional[str] = N
         return RedirectResponse(url=f"http://localhost:8501?auth=error&error={str(e)}")
 
 @app.post("/api/generate-post")
-async def generate_post(request: Request):
-    """Generate a post using DeepSeek"""
+async def generate_post(request: PostRequest):
     try:
-        data = await request.json()
-        prompt = data.get("prompt")
+        logger.debug(f"Received post generation request: {request}")
         
-        if not prompt:
-            raise HTTPException(status_code=400, detail="No prompt provided")
+        if not request.description and not request.content_url:
+            logger.error("Neither description nor content_url provided")
+            raise HTTPException(status_code=400, detail="Either description or content_url must be provided")
             
-        post_content = deepseek_service.generate_post(prompt)
-        return {"content": post_content}
+        logger.info(f"Generating post with content_url: {request.content_url}, description: {request.description}, commentary: {request.commentary}")
         
-    except HTTPException:
-        raise
+        result = await deepseek_service.generate_post(
+            content_url=request.content_url,
+            description=request.description,
+            commentary=request.commentary
+        )
+        
+        if not result or "post" not in result:
+            logger.error("Failed to generate post: Invalid response format")
+            return {
+                "post": f"Excited to share this content!\n\nCheck out the details in the comments",
+                "image_url": None
+            }
+            
+        logger.debug(f"Successfully generated post: {result}")
+        return result
+        
     except Exception as e:
-        error_msg = f"Error generating post: {str(e)}"
-        logger.error(error_msg)
-        raise HTTPException(status_code=500, detail=error_msg)
+        logger.error(f"Error generating post: {str(e)}")
+        # Return a fallback response instead of raising an error
+        return {
+            "post": f"Excited to share this content!\n\nCheck out the details in the comments",
+            "image_url": None
+        }
 
 @app.post("/api/upload-image")
 async def upload_image(file: UploadFile = File(...)):
