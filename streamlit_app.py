@@ -1,207 +1,278 @@
 import streamlit as st
 import requests
+import json
+import os
+from pathlib import Path
+import time
+import tempfile
+from datetime import datetime
+import logging
 from PIL import Image
 import io
-import os
-from dotenv import load_dotenv
-import webbrowser
+import base64
+import traceback
 
-# Load environment variables
-load_dotenv()
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# Configure the page
+# Constants
+BACKEND_URL = "http://localhost:8000"
+TOKEN_FILE = "linkedin_token.json"
+
+# Initialize session state
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+if "description" not in st.session_state:
+    st.session_state.description = ""
+if "use_test_values" not in st.session_state:
+    st.session_state.use_test_values = False
+
+def get_test_values():
+    """Return test values for development"""
+    # Read the test caption
+    try:
+        with open('tests/caption.txt', 'r') as f:
+            caption = f.read()
+    except Exception as e:
+        logger.error(f"Error reading caption file: {str(e)}")
+        caption = "Excited to share my latest insights on AI and machine learning! 🤖✨ #AI #MachineLearning #Innovation"
+    
+    return {
+        "description": caption
+    }
+
+def get_test_images():
+    """Return list of test images"""
+    try:
+        image_dir = 'tests/images'
+        images = [f for f in os.listdir(image_dir) if f.endswith(('.png', '.jpg', '.jpeg'))]
+        return [os.path.join(image_dir, img) for img in images]
+    except Exception as e:
+        logger.error(f"Error reading images directory: {str(e)}")
+        return []
+
+def check_auth_status():
+    """Check if user is authenticated with LinkedIn"""
+    try:
+        response = requests.get(f"{BACKEND_URL}/api/auth/status")
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"Auth status check response: {data}")
+            return data.get("authenticated", False)
+        return False
+    except Exception as e:
+        logger.error(f"Error checking auth status: {str(e)}")
+        return False
+
+def start_linkedin_auth():
+    """Start LinkedIn OAuth flow"""
+    try:
+        response = requests.get(f"{BACKEND_URL}/api/auth/linkedin")
+        if response.status_code == 200:
+            data = response.json()
+            logger.info(f"LinkedIn auth response status: {response.status_code}")
+            logger.info(f"LinkedIn auth response headers: {response.headers}")
+            logger.info(f"LinkedIn auth response content: {data}")
+            return data.get("auth_url")
+        return None
+    except Exception as e:
+        logger.error(f"Error starting LinkedIn auth: {str(e)}")
+        return None
+
+def generate_post(prompt):
+    """Generate a post using the DeepSeek service"""
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/api/generate-post",
+            json={"description": prompt}
+        )
+        if response.status_code == 200:
+            return response.json().get("post")
+        return None
+    except Exception as e:
+        logger.error(f"Error generating post: {str(e)}")
+        return None
+
+def post_to_linkedin(content, image_url=None):
+    """Post content to LinkedIn"""
+    try:
+        logger.info("Preparing to post to LinkedIn")
+        logger.info(f"Content length: {len(content) if content else 0}")
+        logger.info(f"Image URL: {image_url}")
+        
+        data = {"post": content}
+        if image_url:
+            data["image_url"] = image_url
+            
+        logger.info("Sending post request to backend")
+        response = requests.post(
+            "http://localhost:8000/api/post-to-linkedin",
+            json=data
+        )
+        
+        logger.info(f"Response status code: {response.status_code}")
+        logger.info(f"Response content: {response.text}")
+        
+        if response.status_code == 200:
+            logger.info("Successfully posted to LinkedIn")
+            return True
+        else:
+            logger.error(f"Failed to post to LinkedIn: {response.text}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error posting to LinkedIn: {str(e)}")
+        logger.error(f"Error details: {traceback.format_exc()}")
+        return False
+
+def save_uploaded_image(uploaded_file):
+    """Save uploaded image and return the URL"""
+    try:
+        # Convert the uploaded file to base64
+        image = Image.open(uploaded_file)
+        buffered = io.BytesIO()
+        image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        
+        # Send to backend
+        response = requests.post(
+            f"{BACKEND_URL}/api/upload-image",
+            files={"file": ("image.png", buffered.getvalue(), "image/png")}
+        )
+        
+        if response.status_code == 200:
+            return response.json().get("image_url")
+        return None
+    except Exception as e:
+        logger.error(f"Error saving image: {str(e)}")
+        return None
+
+# Set page config
 st.set_page_config(
     page_title="LinkedIn Post Assistant",
     page_icon="💼",
     layout="wide"
 )
 
-# Custom CSS
+# Add custom CSS
 st.markdown("""
-    <style>
+<style>
     .stButton>button {
         width: 100%;
-        margin-top: 10px;
-        background-color: #0077B5;
-        color: white;
-        border: none;
-        padding: 10px 20px;
-        border-radius: 5px;
-        cursor: pointer;
+        height: 3em;
+        margin-top: 1em;
     }
-    .stButton>button:hover {
-        background-color: #006097;
+    .stTextArea>div>div>textarea {
+        height: 200px;
     }
-    .main {
-        padding: 2rem;
+    .uploadedFile {
+        display: none;
     }
-    </style>
-    """, unsafe_allow_html=True)
+    .stMarkdown {
+        margin-top: 1em;
+    }
+    .preview-box {
+        border: 1px solid #ddd;
+        padding: 20px;
+        border-radius: 10px;
+        margin: 10px 0;
+        background-color: #f8f9fa;
+    }
+    .preview-header {
+        font-weight: bold;
+        margin-bottom: 10px;
+    }
+    .preview-content {
+        white-space: pre-wrap;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Title and description
-st.title("💼 LinkedIn Post Assistant")
-st.markdown("""
-    Create professional LinkedIn posts with AI assistance. Upload an image, add a description,
-    and let our AI generate an engaging post for you.
-    """)
-
-# Initialize session state for authentication
-if 'linkedin_authenticated' not in st.session_state:
-    st.session_state.linkedin_authenticated = False
-
-# LinkedIn Authentication
-if not st.session_state.linkedin_authenticated:
-    st.subheader("🔑 LinkedIn Authentication")
-    if st.button("Connect with LinkedIn"):
-        try:
-            response = requests.get("http://localhost:8000/api/auth/linkedin")
-            if response.status_code == 200:
-                auth_url = response.json()["auth_url"]
-                webbrowser.open(auth_url)
-                st.info("Please complete the LinkedIn authentication in your browser.")
+def main():
+    st.title("LinkedIn Post Generator")
+    
+    # Check URL parameters for auth status
+    params = st.query_params
+    if "auth" in params:
+        if params["auth"] == "success":
+            st.success("Successfully connected to LinkedIn!")
+            st.session_state.authenticated = True
+        elif params["auth"] == "error":
+            st.error(f"Authentication failed: {params.get('error', 'Unknown error')}")
+            st.session_state.authenticated = False
+    
+    # Check authentication status
+    if not st.session_state.authenticated:
+        st.warning("Please connect your LinkedIn account first")
+        if st.button("Connect LinkedIn"):
+            auth_url = start_linkedin_auth()
+            if auth_url:
+                st.markdown(f'<a href="{auth_url}" target="_blank">Click here to connect LinkedIn</a>', unsafe_allow_html=True)
             else:
-                st.error("Failed to start LinkedIn authentication.")
-        except Exception as e:
-            st.error(f"An error occurred: {str(e)}")
+                st.error("Failed to get authentication URL")
+        return
     
-    # Check for authentication success using st.query_params
-    query_params = st.query_params
-    if "auth_success" in query_params:
-        st.session_state.linkedin_authenticated = True
-        st.success("Successfully authenticated with LinkedIn!")
-    elif "auth_error" in query_params:
-        st.error(f"Authentication failed: {query_params['auth_error']}")
+    # Test values toggle
+    use_test = st.checkbox("Use test values", value=st.session_state.use_test_values)
+    if use_test != st.session_state.use_test_values:
+        st.session_state.use_test_values = use_test
+        if use_test:
+            test_values = get_test_values()
+            st.session_state.description = test_values["description"]
     
-    st.stop()
-
-# Create two columns for the main content
-col1, col2 = st.columns([1, 1])
-
-# Initialize session state for image_url if it doesn't exist
-if 'image_url' not in st.session_state:
-    st.session_state.image_url = None
-
-with col1:
-    st.subheader("📝 Post Details")
-    
-    # Add checkbox for using test content
-    use_test_content = st.checkbox("Use test content (no AI generation)", value=False)
-    
-    if not use_test_content:
-        # Image upload
-        uploaded_file = st.file_uploader("Upload an image (optional)", type=["jpg", "jpeg", "png"])
-        
-        # Description input
+    # Post generation form
+    with st.form("post_form"):
         description = st.text_area(
-            "Describe your post",
-            placeholder="Enter a brief description of what you want to post about...",
+            "Enter your post prompt",
+            value=st.session_state.description,
             height=150
         )
         
-        # Generate button
-        if st.button("Generate Post"):
-            if not description:
-                st.error("Please enter a description for your post.")
-            else:
-                with st.spinner("Generating your post..."):
-                    try:
-                        # Upload image if provided
-                        if uploaded_file:
-                            files = {"file": uploaded_file}
-                            response = requests.post("http://localhost:8000/api/upload-image", files=files)
-                            if response.status_code == 200:
-                                st.session_state.image_url = response.json()["location"]
-                            else:
-                                st.error(f"Failed to upload image. Status code: {response.status_code}")
-                                st.error(f"Error details: {response.text}")
-                                st.session_state.image_url = None
-                        else:
-                            st.session_state.image_url = None
-                        
-                        # Generate post
-                        response = requests.post(
-                            "http://localhost:8000/api/generate-post",
-                            json={"description": description, "image_url": st.session_state.image_url}
-                        )
-                        
-                        if response.status_code == 200:
-                            generated_post = response.json()["post"]
-                            st.session_state.generated_post = generated_post
-                        else:
-                            st.error(f"Failed to generate post. Status code: {response.status_code}")
-                            st.error(f"Error details: {response.text}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Could not connect to the backend server. Make sure it's running on http://localhost:8000")
-                    except Exception as e:
-                        st.error(f"An error occurred: {str(e)}")
-    else:
-        # Load test content
-        try:
-            # Read test caption
-            with open("tests/caption.txt", "r") as f:
-                test_caption = f.read()
-            
-            # Set test image path
-            test_image = "tests/images/Screenshot 2025-03-21 at 18.48.51.png"
-            
-            if os.path.exists(test_image):
-                st.image(test_image, caption="Test Image", use_column_width=True)
-                st.session_state.image_url = test_image
-                st.session_state.generated_post = test_caption
-                st.success("Test content loaded successfully!")
-            else:
-                st.error("Test image not found. Please check the file path.")
-        except Exception as e:
-            st.error(f"Error loading test content: {str(e)}")
-
-with col2:
-    st.subheader("✨ Generated Post")
-    
-    if "generated_post" in st.session_state:
-        st.text_area(
-            "Generated Post",
-            value=st.session_state.generated_post,
-            height=200,
-            disabled=True
-        )
+        # Show test images if using test values
+        if st.session_state.use_test_values:
+            test_images = get_test_images()
+            if test_images:
+                st.write("Available test images:")
+                for img_path in test_images:
+                    st.image(img_path, caption=os.path.basename(img_path))
         
-        # Preview section
-        st.subheader("👁️ Preview")
-        if st.session_state.image_url:
-            if use_test_content:
-                st.image(st.session_state.image_url, caption="Post Image", use_column_width=True)
+        uploaded_file = st.file_uploader("Upload an image (optional)", type=["png", "jpg", "jpeg"])
+        
+        submit = st.form_submit_button("Generate Post")
+        
+        if submit:
+            if description:
+                with st.spinner("Generating post..."):
+                    generated_post = generate_post(description)
+                    if generated_post:
+                        st.session_state.description = generated_post
+                        st.success("Post generated successfully!")
+                    else:
+                        st.error("Failed to generate post")
             else:
-                st.image(uploaded_file, caption="Post Image", use_column_width=True)
+                st.warning("Please enter a post prompt")
+    
+    # Display generated content
+    if st.session_state.description:
+        st.subheader("Generated Content")
+        st.write(st.session_state.description)
+        
+        # Image preview if uploaded
+        if uploaded_file:
+            st.image(uploaded_file, caption="Uploaded Image")
         
         # Post to LinkedIn button
         if st.button("Post to LinkedIn"):
             with st.spinner("Posting to LinkedIn..."):
-                try:
-                    response = requests.post(
-                        "http://localhost:8000/api/post-to-linkedin",
-                        json={
-                            "description": st.session_state.generated_post,
-                            "image_url": st.session_state.image_url
-                        }
-                    )
-                    
-                    if response.status_code == 200:
-                        st.success("Post successfully published to LinkedIn!")
-                    else:
-                        st.error(f"Failed to post to LinkedIn. Status code: {response.status_code}")
-                        st.error(f"Error details: {response.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Could not connect to the backend server. Make sure it's running on http://localhost:8000")
-                except Exception as e:
-                    st.error(f"An error occurred: {str(e)}")
-    else:
-        st.info("Your generated post will appear here.")
+                image_url = None
+                if uploaded_file:
+                    image_url = save_uploaded_image(uploaded_file)
+                
+                if post_to_linkedin(st.session_state.description, image_url):
+                    st.success("Posted to LinkedIn successfully!")
+                else:
+                    st.error("Failed to post to LinkedIn")
 
-# Footer
-st.markdown("---")
-st.markdown("""
-    <div style='text-align: center'>
-        <p>Made with ❤️ using FastAPI and Streamlit</p>
-        <p>Powered by Deepseek AI</p>
-    </div>
-    """, unsafe_allow_html=True)
+if __name__ == "__main__":
+    main()

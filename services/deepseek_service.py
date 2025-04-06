@@ -28,7 +28,7 @@ class DeepseekService:
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are a professional LinkedIn content creator. Create engaging, professional posts that follow LinkedIn best practices."
+                    "content": "You are a professional LinkedIn content creator. Create engaging, professional posts that follow LinkedIn best practices. Return ONLY the post text without any explanations, formatting instructions, or meta-commentary."
                 },
                 {
                     "role": "user",
@@ -44,24 +44,35 @@ class DeepseekService:
             response.raise_for_status()
             result = response.json()
             
-            return result["choices"][0]["message"]["content"]
+            # Clean up the response to ensure it's just the post text
+            post_text = result["choices"][0]["message"]["content"].strip()
+            
+            # Remove any markdown formatting if present
+            post_text = post_text.replace("**", "").replace("*", "")
+            
+            return post_text
         except Exception as e:
             raise Exception(f"Failed to generate post: {str(e)}")
 
     def _create_prompt(self, description: str, image_url: str = None) -> str:
         """
-        Create a prompt for the AI model
+        Create a prompt for the AI model to generate LinkedIn posts that are ready to post
         """
         base_prompt = f"""
         Create a professional LinkedIn post based on the following description:
         {description}
         
         Guidelines:
-        1. Keep it professional and engaging
-        2. Use appropriate hashtags (max 3)
-        3. Include a call to action
-        4. Optimize for LinkedIn's algorithm
+        1. Create ONLY the LinkedIn post text - no explanations, no extra output
+        2. Format the post for immediate posting on LinkedIn
+        3. Use appropriate hashtags (max 3)
+        4. Include a call to action
         5. Keep it concise (max 1300 characters)
+        6. Make it engaging and professional
+        7. Do not include any meta-commentary or explanations about the post
+        8. Do not include any placeholders like [Project Name] - use generic terms instead
+        9. Do not include any formatting instructions or "Why this works" sections
+        10. The output should be ONLY the LinkedIn post text, ready to be copied and pasted
         """
         
         if image_url:
